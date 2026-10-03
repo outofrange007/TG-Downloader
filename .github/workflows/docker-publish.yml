@@ -27,4 +27,4 @@ jobs:
       with:
         context: .
         push: true
-        tags: ghcr.io/${{ github.repository_owner }}/TG-Downloader:latest
+        tags: ghcr.io/${{ github.repository_owner }}/tg-downloader:latest
