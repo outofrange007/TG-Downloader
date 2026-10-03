@@ -133,7 +133,7 @@ The application stores runtime data below `DATA_PATH`.
 | `download_history.log` | Legacy download history |
 | `downloads/` | Downloaded Telegram media |
 | `logs/` | Application log files |
-| `logs/telegram-ripper.log` | Main rotating log file |
+| `logs/telegram-downloader.log` | Main rotating log file |
 
 Example:
 
@@ -143,7 +143,7 @@ Example:
     ├── download_history.jsonl
     ├── downloads/
     └── logs/
-        └── telegram-ripper.log
+        └── telegram-downloader.log
 
 Do not commit credentials, session files, personal media, or logs to a public repository.
 
@@ -166,7 +166,7 @@ The prebuilt image can be started with the following Compose configuration:
     version: "3.8"
 
     services:
-      telegram-ripper:
+      telegram-downloader:
         image: ghcr.io/outofrange007/tg-downloader:latest
         container_name: tg_downloader
         restart: unless-stopped
@@ -189,7 +189,7 @@ The web interface is available at:
 
 View the logs:
 
-    docker compose logs -f telegram-ripper
+    docker compose logs -f telegram-downloader
 
 Stop the application:
 
@@ -202,14 +202,14 @@ Example Portainer Stack:
     version: "3.8"
 
     services:
-      telegram-ripper:
+      telegram-downloader:
         image: ghcr.io/outofrange007/tg-downloader:latest
         container_name: tg_downloader
         restart: unless-stopped
         ports:
           - "5000:5000"
         volumes:
-          - /opt/telegram_ripper/data:/app/data
+          - /opt/telegram_downloader/data:/app/data
         environment:
           - TZ=Europe/Berlin
           - DATA_PATH=/app/data
@@ -217,7 +217,7 @@ Example Portainer Stack:
 
 The host directory must be persistent and writable by the container. Create it before deployment if necessary:
 
-    mkdir -p /opt/telegram_ripper/data
+    mkdir -p /opt/downloader/data
 
 Do not delete `scraping_session.session` unless a new Telegram login is intended.
 
@@ -291,7 +291,7 @@ When Telegram requests a flood-wait, the application logs the required waiting p
 
 Logs are written to:
 
-    data/logs/telegram-ripper.log
+    data/logs/telegram-downloader.log
 
 The log uses rotating logging with a maximum size of 5 MB and up to three backup files.
 
