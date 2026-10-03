@@ -1,4 +1,4 @@
-# Telegram Ripper
+# Telegram Downloader
 
 A Flask-based web application that downloads media files from Telegram groups, supergroups, channels, and forum topics.
 
@@ -167,8 +167,8 @@ The prebuilt image can be started with the following Compose configuration:
 
     services:
       telegram-ripper:
-        image: ghcr.io/outofrange007/telegram-ripper:latest
-        container_name: telegram_ripper
+        image: ghcr.io/outofrange007/tg-downloader:latest
+        container_name: tg_downloader
         restart: unless-stopped
         ports:
           - "5000:5000"
@@ -203,8 +203,8 @@ Example Portainer Stack:
 
     services:
       telegram-ripper:
-        image: ghcr.io/outofrange007/telegram-ripper:latest
-        container_name: telegram_ripper
+        image: ghcr.io/outofrange007/tg-downloader:latest
+        container_name: tg_downloader
         restart: unless-stopped
         ports:
           - "5000:5000"
