@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Ripper</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a1a; min-height: 100vh; color: #e0e0e0; }
+        .container { max-width: 900px; margin: 0 auto; padding: 30px; }
+        header { text-align: center; margin-bottom: 30px; color: #fff; }
+        h1 { font-size: 2.2rem; margin-bottom: 10px; }
+        .section { background: rgba(255,255,255,0.03); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .section h2 { color: #6ca6fd; margin-bottom: 15px; font-size: 1.3rem; display: flex; align-items: center; gap: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 8px; font-size: 0.9rem; color: #8899a6; text-transform: uppercase; }
+        input[type="text"], input[type="password"], select { width: 100%; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 6px; font-size: 1rem; outline: none; }
+        input:focus, select:focus { border-color: #6ca6fd; }
+        option { background: #1a1a1a; color: #fff; }
+        .btn { background: rgba(108, 166, 253, 0.2); color: #6ca6fd; border: 1px solid rgba(108, 166, 253, 0.3); padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 1rem; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 8px; }
+        .btn:hover { background: rgba(108, 166, 253, 0.3); transform: translateY(-1px); }
+        .btn.stop { background: rgba(239, 68, 68, 0.2); color: #ef4444; border-color: rgba(239, 68, 68, 0.3); }
+        .status-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 6px; font-family: monospace; font-size: 0.95rem; display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(255,255,255,0.05); }
+        
+        /* General Progress Bar styles */
+        .progress-bar-container { background: #333; height: 12px; border-radius: 6px; overflow: hidden; border: 1px solid rgba(0,0,0,0.5); margin-top: 5px; }
+        .progress-bar { height: 100%; width: 0%; transition: width 0.3s ease; }
+        
+        /* Specific colors for the bars */
+        .bar-overall { background: linear-gradient(90deg, #6ca6fd, #4b8af3); }
+        .bar-file { background: linear-gradient(90deg, #4ade80, #22c55e); }
+        
+        /* Views */
+        #authView { display: none; }
+        #appView { display: none; }
+        #step2Auth { display: none; }
+        #twoFactorAuth { display: none; }
+        .loading-screen { text-align: center; margin-top: 100px; font-size: 1.5rem; color: #8899a6; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-download" style="color: #6ca6fd;"></i> Telegram Ripper</h1>
+            <p style="color: #8899a6;" id="uptimeText">System Uptime: <span id="uptime">00:00:00</span></p>
+        </header>
+
+        <div id="loadingView" class="loading-screen">
+            <i class="fas fa-spinner fa-spin"></i> Checking connection...
+        </div>
+
+        <!-- AUTHENTICATION VIEW -->
+        <div id="authView">
+            <div class="section" id="step1Auth">
+                <h2><i class="fas fa-user-shield"></i> Telegram Login Setup</h2>
+                <p style="color: #8899a6; margin-bottom: 20px;">Please enter your API credentials and phone number to connect to Telegram.</p>
+                <div class="form-group">
+                    <label>API ID</label>
+                    <input type="text" id="apiIdInput" placeholder="e.g. 1234567">
+                </div>
+                <div class="form-group">
+                    <label>API Hash</label>
+                    <input type="text" id="apiHashInput" placeholder="e.g. 0123456789abcdef0123456789abcdef">
+                </div>
+                <div class="form-group">
+                    <label>Phone Number (incl. country code)</label>
+                    <input type="text" id="phoneInput" placeholder="e.g. +4915112345678">
+                </div>
+                <button class="btn" onclick="sendAuthCode()"><i class="fas fa-paper-plane"></i> Send Login Code</button>
+            </div>
+
+            <div class="section" id="step2Auth">
+                <h2><i class="fas fa-key"></i> Verification Code</h2>
+                <p style="color: #8899a6; margin-bottom: 20px;">We sent a code to your Telegram app. Enter it below.</p>
+                <div class="form-group">
+                    <label>Login Code</label>
+                    <input type="text" id="codeInput" placeholder="Code (e.g. 12345)">
+                </div>
+                <div class="form-group" id="twoFactorAuth">
+                    <label>2FA Password (only if enabled)</label>
+                    <input type="password" id="passwordInput" placeholder="Your Telegram Cloud Password">
+                </div>
+                <button class="btn" onclick="verifyAuthCode()"><i class="fas fa-check-circle"></i> Verify & Login</button>
+            </div>
+        </div>
+
+        <!-- MAIN DASHBOARD VIEW -->
+        <div id="appView">
+            <div class="section">
+                <h2><i class="fas fa-play-circle"></i> Target Configuration</h2>
+                <div class="form-group">
+                    <label for="groupSelect">Select Telegram Group / Channel</label>
+                    <select id="groupSelect">
+                        <option value="">Loading groups from Telegram...</option>
+                    </select>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button id="startBtn" class="btn" onclick="startDownload()"><i class="fas fa-play"></i> Start Download</button>
+                    <button id="stopBtn" class="btn stop" onclick="stopDownload()" style="display: none;"><i class="fas fa-stop"></i> Stop Download</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2><i class="fas fa-chart-line"></i> Overall Status</h2>
+                <div class="status-box">
+                    <div><strong>State:</strong> <span id="statusText">Idle</span></div>
+                    <div><strong>Current File:</strong> <span id="currentFile">None</span></div>
+                    <div><strong>File Size:</strong> <span id="fileSize">0.00</span> MB</div>
+                    <div><strong>Download Speed:</strong> <span id="downloadSpeed">0.00</span> MB/s</div>
+                    
+                    <!-- NEW: File Progress Bar -->
+                    <div style="margin: 5px 0;">
+                        <strong>Current File Progress:</strong> <span id="fileProgressText">0.0%</span>
+                        <div class="progress-bar-container">
+                            <div id="fileProgressBar" class="progress-bar bar-file"></div>
+                        </div>
+                    </div>
+                    
+                    <div><strong>Total Files Found:</strong> <span id="totalFiles">0</span></div>
+                    <div><strong>Successfully Processed:</strong> <span id="downloadCount">0</span></div>
+                    
+                    <!-- OVERALL Progress Bar -->
+                    <div style="margin: 5px 0;">
+                        <strong>Overall Progress:</strong> <span id="progressText">0.0%</span>
+                        <div class="progress-bar-container">
+                            <div id="progressBar" class="progress-bar bar-overall"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check Auth Status on load
+        window.addEventListener('DOMContentLoaded', () => {
+            fetch('/api/auth/status')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('loadingView').style.display = 'none';
+                    if (data.authorized) {
+                        showAppDashboard();
+                    } else {
+                        document.getElementById('authView').style.display = 'block';
+                        document.getElementById('uptimeText').style.display = 'none';
+                    }
+                });
+        });
+
+        // --- AUTH LOGIC ---
+        function sendAuthCode() {
+            const apiId = document.getElementById('apiIdInput').value;
+            const apiHash = document.getElementById('apiHashInput').value;
+            const phone = document.getElementById('phoneInput').value;
+
+            if (!apiId || !apiHash || !phone) return alert("Please fill all fields!");
+
+            fetch('/api/auth/send_code', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_id: apiId, api_hash: apiHash, phone: phone })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    if (data.requires_code) {
+                        document.getElementById('step1Auth').style.display = 'none';
+                        document.getElementById('step2Auth').style.display = 'block';
+                    } else {
+                        showAppDashboard(); // Already logged in
+                    }
+                } else {
+                    alert("Error: " + data.error);
+                }
+            });
+        }
+
+        function verifyAuthCode() {
+            const code = document.getElementById('codeInput').value;
+            const password = document.getElementById('passwordInput').value;
+
+            fetch('/api/auth/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code, password: password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showAppDashboard();
+                } else {
+                    if (data.error === '2fa_required') {
+                        document.getElementById('twoFactorAuth').style.display = 'block';
+                        alert("Two-Factor Authentication is active. Please enter your password.");
+                    } else {
+                        alert("Error: " + data.error);
+                    }
+                }
+            });
+        }
+
+        // --- APP LOGIC ---
+        function showAppDashboard() {
+            document.getElementById('authView').style.display = 'none';
+            document.getElementById('appView').style.display = 'block';
+            document.getElementById('uptimeText').style.display = 'block';
+            loadGroups();
+            startPolling();
+        }
+
+        function loadGroups() {
+            fetch('/api/groups')
+                .then(res => res.json())
+                .then(data => {
+                    const select = document.getElementById('groupSelect');
+                    if (data.success && data.groups.length > 0) {
+                        select.innerHTML = '<option value="">-- Please select a group --</option>';
+                        data.groups.forEach(g => {
+                            select.innerHTML += `<option value="${g.id}">${g.title}</option>`;
+                        });
+                    } else {
+                        select.innerHTML = '<option value="">No groups found</option>';
+                    }
+                });
+        }
+
+        function startDownload() {
+            const chatId = document.getElementById('groupSelect').value;
+            if (!chatId) return alert('Please select a group first!');
+
+            fetch('/api/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId })
+            }).then(res => res.json()).then(data => {
+                if (!data.success) alert('Error: ' + data.error);
+            });
+        }
+
+        function stopDownload() {
+            fetch('/api/stop', { method: 'POST' });
+        }
+
+        function startPolling() {
+            setInterval(() => {
+                fetch('/api/status')
+                    .then(res => res.json())
+                    .then(data => {
+                        document.getElementById('uptime').textContent = data.uptime;
+                        document.getElementById('statusText').textContent = data.status_text;
+                        document.getElementById('currentFile').textContent = data.current_file;
+                        document.getElementById('fileSize').textContent = data.file_size_mb;
+                        document.getElementById('downloadSpeed').textContent = data.download_speed_mbps;
+                        document.getElementById('totalFiles').textContent = data.total_files;
+                        document.getElementById('downloadCount').textContent = data.downloaded_count;
+                        
+                        // Current File Progress Update
+                        document.getElementById('fileProgressText').textContent = data.current_file_progress + '%';
+                        document.getElementById('fileProgressBar').style.width = data.current_file_progress + '%';
+                        
+                        // Overall Progress Update
+                        document.getElementById('progressText').textContent = data.overall_progress + '%';
+                        document.getElementById('progressBar').style.width = data.overall_progress + '%';
+
+                        const startBtn = document.getElementById('startBtn');
+                        const stopBtn = document.getElementById('stopBtn');
+
+                        if (data.is_downloading) {
+                            startBtn.style.display = 'none';
+                            stopBtn.style.display = 'inline-flex';
+                        } else {
+                            startBtn.style.display = 'inline-flex';
+                            stopBtn.style.display = 'none';
+                        }
+                    });
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
