@@ -725,6 +725,7 @@ class TelegramRipperWeb:
 
             qr_login = client.qr_login()
             deadline = time.time() + 180
+            logged_in = False
 
             while time.time() < deadline:
                 self.set_qr_state(
@@ -734,18 +735,19 @@ class TelegramRipperWeb:
                 )
 
                 try:
-                    qr_login.wait(timeout=25)
+                    # QRLogin methods are coroutines: run them in the client's loop
+                    client.loop.run_until_complete(qr_login.wait(timeout=25))
+                    logged_in = True
                     break  # Scanned and accepted
 
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, TimeoutError):
                     # Token expired or not scanned yet: refresh the QR code
-                    qr_login.recreate()
+                    client.loop.run_until_complete(qr_login.recreate())
                     continue
 
                 except SessionPasswordNeededError:
                     self.set_qr_state(status="2fa_required", error=None)
 
-                    signed_in = False
                     password_deadline = time.time() + 120
                     while time.time() < password_deadline:
                         try:
@@ -755,7 +757,7 @@ class TelegramRipperWeb:
 
                         try:
                             client.sign_in(password=password)
-                            signed_in = True
+                            logged_in = True
                             break
                         except PasswordHashInvalidError:
                             self.set_qr_state(
@@ -763,23 +765,28 @@ class TelegramRipperWeb:
                                 error="Incorrect 2FA password",
                             )
 
-                    if not signed_in:
+                    if not logged_in:
                         self.set_qr_state(
                             status="expired",
                             error="2FA password was not provided in time.",
                         )
                         return
                     break
-            else:
+
+            if not logged_in:
                 self.set_qr_state(
                     status="expired",
                     error="QR code expired. Please generate a new one.",
                 )
                 return
 
+            if not client.is_user_authorized():
+                self.set_qr_state(status="error", error="Login could not be verified")
+                return
+
             self.set_qr_state(status="success", qr_image=None, error=None)
             self.logger.info("QR login successful")
-
+            
         except Exception as exc:
             self.logger.exception("Error during QR login worker")
             self.set_qr_state(status="error", error=str(exc))
