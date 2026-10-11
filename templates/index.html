@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Ripper</title>
+    <title>TG-Downloader</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -22,27 +22,33 @@
         .btn:hover { background: rgba(108, 166, 253, 0.3); transform: translateY(-1px); }
         .btn.stop { background: rgba(239, 68, 68, 0.2); color: #ef4444; border-color: rgba(239, 68, 68, 0.3); }
         .status-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 6px; font-family: monospace; font-size: 0.95rem; display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(255,255,255,0.05); }
-        
-        /* General Progress Bar styles */
+
         .progress-bar-container { background: #333; height: 12px; border-radius: 6px; overflow: hidden; border: 1px solid rgba(0,0,0,0.5); margin-top: 5px; }
         .progress-bar { height: 100%; width: 0%; transition: width 0.3s ease; }
-        
-        /* Specific colors for the bars */
         .bar-overall { background: linear-gradient(90deg, #6ca6fd, #4b8af3); }
         .bar-file { background: linear-gradient(90deg, #4ade80, #22c55e); }
-        
-        /* Views */
-        #authView { display: none; }
-        #appView { display: none; }
-        #step2Auth { display: none; }
-        #twoFactorAuth { display: none; }
+
+        /* Login tabs */
+        .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+        .tab { flex: 1; text-align: center; padding: 10px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); color: #8899a6; background: rgba(0,0,0,0.2); }
+        .tab.active { color: #6ca6fd; border-color: rgba(108,166,253,0.4); background: rgba(108,166,253,0.15); }
+        .qr-box { display: none; text-align: center; margin: 20px 0; }
+        .qr-box img { background: #fff; padding: 10px; border-radius: 8px; width: 260px; height: 260px; }
+        .hint { color: #8899a6; font-size: 0.9rem; margin-bottom: 15px; }
+        .error-text { color: #ef4444; font-size: 0.9rem; margin-top: 10px; min-height: 1.2em; }
+
+        /* Media filter */
+        .checks { display: flex; flex-wrap: wrap; gap: 20px; }
+        .checks label { display: flex; align-items: center; gap: 8px; margin: 0; text-transform: none; font-size: 1rem; color: #e0e0e0; cursor: pointer; }
+
+        .hidden { display: none; }
         .loading-screen { text-align: center; margin-top: 100px; font-size: 1.5rem; color: #8899a6; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1><i class="fas fa-download" style="color: #6ca6fd;"></i> Telegram Ripper</h1>
+            <h1><i class="fas fa-download" style="color: #6ca6fd;"></i> TG-Downloader</h1>
             <p style="color: #8899a6;" id="uptimeText">System Uptime: <span id="uptime">00:00:00</span></p>
         </header>
 
@@ -51,10 +57,10 @@
         </div>
 
         <!-- AUTHENTICATION VIEW -->
-        <div id="authView">
-            <div class="section" id="step1Auth">
-                <h2><i class="fas fa-user-shield"></i> Telegram Login Setup</h2>
-                <p style="color: #8899a6; margin-bottom: 20px;">Please enter your API credentials and phone number to connect to Telegram.</p>
+        <div id="authView" class="hidden">
+            <div class="section">
+                <h2><i class="fas fa-user-shield"></i> Telegram Login</h2>
+
                 <div class="form-group">
                     <label>API ID</label>
                     <input type="text" id="apiIdInput" placeholder="e.g. 1234567">
@@ -63,38 +69,85 @@
                     <label>API Hash</label>
                     <input type="text" id="apiHashInput" placeholder="e.g. 0123456789abcdef0123456789abcdef">
                 </div>
-                <div class="form-group">
-                    <label>Phone Number (incl. country code)</label>
-                    <input type="text" id="phoneInput" placeholder="e.g. +4915112345678">
-                </div>
-                <button class="btn" onclick="sendAuthCode()"><i class="fas fa-paper-plane"></i> Send Login Code</button>
-            </div>
 
-            <div class="section" id="step2Auth">
-                <h2><i class="fas fa-key"></i> Verification Code</h2>
-                <p style="color: #8899a6; margin-bottom: 20px;">We sent a code to your Telegram app. Enter it below.</p>
-                <div class="form-group">
-                    <label>Login Code</label>
-                    <input type="text" id="codeInput" placeholder="Code (e.g. 12345)">
+                <div class="tabs">
+                    <div class="tab active" id="tabQr" onclick="switchTab('qr')"><i class="fas fa-qrcode"></i> QR Code</div>
+                    <div class="tab" id="tabPhone" onclick="switchTab('phone')"><i class="fas fa-mobile-alt"></i> Phone Code</div>
                 </div>
-                <div class="form-group" id="twoFactorAuth">
-                    <label>2FA Password (only if enabled)</label>
-                    <input type="password" id="passwordInput" placeholder="Your Telegram Cloud Password">
+
+                <!-- QR LOGIN -->
+                <div id="qrPanel">
+                    <p class="hint">Open Telegram on your phone: Settings &rarr; Devices &rarr; Link Desktop Device, then scan the QR code.</p>
+                    <button class="btn" id="qrStartBtn" onclick="startQrLogin()"><i class="fas fa-qrcode"></i> Generate QR Code</button>
+
+                    <div class="qr-box" id="qrBox">
+                        <img id="qrImage" alt="Telegram login QR code">
+                        <p class="hint" id="qrHint" style="margin-top: 10px;">Waiting for scan...</p>
+                    </div>
+
+                    <div class="form-group hidden" id="qrTwoFactor">
+                        <label>2FA Password</label>
+                        <input type="password" id="qrPasswordInput" placeholder="Your Telegram Cloud Password">
+                        <button class="btn" style="margin-top: 10px;" onclick="submitQrPassword()"><i class="fas fa-check-circle"></i> Submit Password</button>
+                    </div>
+                    <div class="error-text" id="qrError"></div>
                 </div>
-                <button class="btn" onclick="verifyAuthCode()"><i class="fas fa-check-circle"></i> Verify & Login</button>
+
+                <!-- PHONE LOGIN -->
+                <div id="phonePanel" class="hidden">
+                    <div id="step1Auth">
+                        <div class="form-group">
+                            <label>Phone Number (incl. country code)</label>
+                            <input type="text" id="phoneInput" placeholder="e.g. +4915112345678">
+                        </div>
+                        <button class="btn" onclick="sendAuthCode()"><i class="fas fa-paper-plane"></i> Send Login Code</button>
+                    </div>
+
+                    <div id="step2Auth" class="hidden">
+                        <p class="hint">We sent a code to your Telegram app. Enter it below.</p>
+                        <div class="form-group">
+                            <label>Login Code</label>
+                            <input type="text" id="codeInput" placeholder="Code (e.g. 12345)">
+                        </div>
+                        <div class="form-group hidden" id="twoFactorAuth">
+                            <label>2FA Password (only if enabled)</label>
+                            <input type="password" id="passwordInput" placeholder="Your Telegram Cloud Password">
+                        </div>
+                        <button class="btn" onclick="verifyAuthCode()"><i class="fas fa-check-circle"></i> Verify &amp; Login</button>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- MAIN DASHBOARD VIEW -->
-        <div id="appView">
+        <div id="appView" class="hidden">
             <div class="section">
                 <h2><i class="fas fa-play-circle"></i> Target Configuration</h2>
+
                 <div class="form-group">
-                    <label for="groupSelect">Select Telegram Group / Channel</label>
+                    <label for="groupSelect">Telegram Group / Channel</label>
                     <select id="groupSelect">
                         <option value="">Loading groups from Telegram...</option>
                     </select>
                 </div>
+
+                <div class="form-group hidden" id="topicContainer">
+                    <label for="topicSelect">Topic</label>
+                    <select id="topicSelect">
+                        <option value="">All Topics</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Media Types</label>
+                    <div class="checks">
+                        <label><input type="checkbox" class="media-type" value="photos" checked> <i class="fas fa-image"></i> Photos</label>
+                        <label><input type="checkbox" class="media-type" value="videos" checked> <i class="fas fa-video"></i> Videos</label>
+                        <label><input type="checkbox" class="media-type" value="documents" checked> <i class="fas fa-file"></i> Documents</label>
+                        <label><input type="checkbox" class="media-type" value="audio" checked> <i class="fas fa-music"></i> Audio</label>
+                    </div>
+                </div>
+
                 <div style="display: flex; gap: 10px; margin-top: 20px;">
                     <button id="startBtn" class="btn" onclick="startDownload()"><i class="fas fa-play"></i> Start Download</button>
                     <button id="stopBtn" class="btn stop" onclick="stopDownload()" style="display: none;"><i class="fas fa-stop"></i> Stop Download</button>
@@ -108,19 +161,19 @@
                     <div><strong>Current File:</strong> <span id="currentFile">None</span></div>
                     <div><strong>File Size:</strong> <span id="fileSize">0.00</span> MB</div>
                     <div><strong>Download Speed:</strong> <span id="downloadSpeed">0.00</span> MB/s</div>
-                    
-                    <!-- NEW: File Progress Bar -->
+
                     <div style="margin: 5px 0;">
                         <strong>Current File Progress:</strong> <span id="fileProgressText">0.0%</span>
                         <div class="progress-bar-container">
                             <div id="fileProgressBar" class="progress-bar bar-file"></div>
                         </div>
                     </div>
-                    
-                    <div><strong>Total Files Found:</strong> <span id="totalFiles">0</span></div>
-                    <div><strong>Successfully Processed:</strong> <span id="downloadCount">0</span></div>
-                    
-                    <!-- OVERALL Progress Bar -->
+
+                    <div><strong>Total Files Found:</strong> <span id="totalFiles">-</span></div>
+                    <div><strong>Downloaded:</strong> <span id="downloadCount">0</span></div>
+                    <div><strong>Skipped:</strong> <span id="skippedCount">0</span></div>
+                    <div><strong>Failed:</strong> <span id="failedCount">0</span></div>
+
                     <div style="margin: 5px 0;">
                         <strong>Overall Progress:</strong> <span id="progressText">0.0%</span>
                         <div class="progress-bar-container">
@@ -133,28 +186,135 @@
     </div>
 
     <script>
-        // Check Auth Status on load
+        const $ = (id) => document.getElementById(id);
+        let qrTimer = null;
+        let statusTimer = null;
+
+        // ---------- Startup ----------
         window.addEventListener('DOMContentLoaded', () => {
             fetch('/api/auth/status')
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('loadingView').style.display = 'none';
+                    $('loadingView').style.display = 'none';
                     if (data.authorized) {
                         showAppDashboard();
                     } else {
-                        document.getElementById('authView').style.display = 'block';
-                        document.getElementById('uptimeText').style.display = 'none';
+                        $('authView').style.display = 'block';
+                        $('uptimeText').style.display = 'none';
                     }
+                })
+                .catch(() => {
+                    $('loadingView').textContent = 'Could not reach the server.';
                 });
         });
 
-        // --- AUTH LOGIC ---
-        function sendAuthCode() {
-            const apiId = document.getElementById('apiIdInput').value;
-            const apiHash = document.getElementById('apiHashInput').value;
-            const phone = document.getElementById('phoneInput').value;
+        // ---------- Login: tabs ----------
+        function switchTab(tab) {
+            const isQr = tab === 'qr';
+            $('tabQr').classList.toggle('active', isQr);
+            $('tabPhone').classList.toggle('active', !isQr);
+            $('qrPanel').classList.toggle('hidden', !isQr);
+            $('phonePanel').classList.toggle('hidden', isQr);
+            if (!isQr) stopQrPolling();
+        }
 
-            if (!apiId || !apiHash || !phone) return alert("Please fill all fields!");
+        // ---------- Login: QR ----------
+        function startQrLogin() {
+            const apiId = $('apiIdInput').value.trim();
+            const apiHash = $('apiHashInput').value.trim();
+            if (!apiId || !apiHash) return alert('Please enter API ID and API Hash!');
+
+            $('qrError').textContent = '';
+            $('qrTwoFactor').classList.add('hidden');
+            $('qrStartBtn').disabled = true;
+
+            fetch('/api/auth/qr/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_id: apiId, api_hash: apiHash })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    $('qrError').textContent = data.error || 'Could not start QR login';
+                    $('qrStartBtn').disabled = false;
+                    return;
+                }
+                $('qrBox').style.display = 'block';
+                $('qrHint').textContent = 'Generating QR code...';
+                startQrPolling();
+            })
+            .catch(() => {
+                $('qrError').textContent = 'Request failed';
+                $('qrStartBtn').disabled = false;
+            });
+        }
+
+        function startQrPolling() {
+            stopQrPolling();
+            qrTimer = setInterval(pollQrStatus, 2000);
+            pollQrStatus();
+        }
+
+        function stopQrPolling() {
+            if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+        }
+
+        function pollQrStatus() {
+            fetch('/api/auth/qr/status')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.qr_image) $('qrImage').src = data.qr_image;
+
+                    switch (data.status) {
+                        case 'waiting':
+                            $('qrHint').textContent = 'Waiting for scan...';
+                            $('qrTwoFactor').classList.add('hidden');
+                            break;
+                        case '2fa_required':
+                            $('qrHint').textContent = 'QR code accepted. Two-factor password required.';
+                            $('qrTwoFactor').classList.remove('hidden');
+                            $('qrError').textContent = data.error || '';
+                            break;
+                        case 'success':
+                            stopQrPolling();
+                            showAppDashboard();
+                            break;
+                        case 'expired':
+                        case 'error':
+                            stopQrPolling();
+                            $('qrError').textContent = data.error || 'QR login failed. Please try again.';
+                            $('qrStartBtn').disabled = false;
+                            break;
+                    }
+                })
+                .catch(() => { /* transient network error: keep polling */ });
+        }
+
+        function submitQrPassword() {
+            const password = $('qrPasswordInput').value;
+            if (!password) return;
+            $('qrError').textContent = '';
+
+            fetch('/api/auth/qr/2fa', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) $('qrError').textContent = data.error || 'Password rejected';
+                $('qrPasswordInput').value = '';
+            });
+        }
+
+        // ---------- Login: phone code ----------
+        function sendAuthCode() {
+            const apiId = $('apiIdInput').value.trim();
+            const apiHash = $('apiHashInput').value.trim();
+            const phone = $('phoneInput').value.trim();
+
+            if (!apiId || !apiHash || !phone) return alert('Please fill all fields!');
 
             fetch('/api/auth/send_code', {
                 method: 'POST',
@@ -165,20 +325,20 @@
             .then(data => {
                 if (data.success) {
                     if (data.requires_code) {
-                        document.getElementById('step1Auth').style.display = 'none';
-                        document.getElementById('step2Auth').style.display = 'block';
+                        $('step1Auth').classList.add('hidden');
+                        $('step2Auth').classList.remove('hidden');
                     } else {
-                        showAppDashboard(); // Already logged in
+                        showAppDashboard();
                     }
                 } else {
-                    alert("Error: " + data.error);
+                    alert('Error: ' + data.error);
                 }
             });
         }
 
         function verifyAuthCode() {
-            const code = document.getElementById('codeInput').value;
-            const password = document.getElementById('passwordInput').value;
+            const code = $('codeInput').value.trim();
+            const password = $('passwordInput').value;
 
             fetch('/api/auth/verify', {
                 method: 'POST',
@@ -189,22 +349,21 @@
             .then(data => {
                 if (data.success) {
                     showAppDashboard();
+                } else if (data.error === '2fa_required') {
+                    $('twoFactorAuth').classList.remove('hidden');
+                    alert('Two-factor authentication is active. Please enter your password.');
                 } else {
-                    if (data.error === '2fa_required') {
-                        document.getElementById('twoFactorAuth').style.display = 'block';
-                        alert("Two-Factor Authentication is active. Please enter your password.");
-                    } else {
-                        alert("Error: " + data.error);
-                    }
+                    alert('Error: ' + data.error);
                 }
             });
         }
 
-        // --- APP LOGIC ---
+        // ---------- Dashboard ----------
         function showAppDashboard() {
-            document.getElementById('authView').style.display = 'none';
-            document.getElementById('appView').style.display = 'block';
-            document.getElementById('uptimeText').style.display = 'block';
+            stopQrPolling();
+            $('authView').style.display = 'none';
+            $('appView').style.display = 'block';
+            $('uptimeText').style.display = 'block';
             loadGroups();
             startPolling();
         }
@@ -213,29 +372,64 @@
             fetch('/api/groups')
                 .then(res => res.json())
                 .then(data => {
-                    const select = document.getElementById('groupSelect');
+                    const select = $('groupSelect');
+                    select.innerHTML = '';
+
                     if (data.success && data.groups.length > 0) {
-                        select.innerHTML = '<option value="">-- Please select a group --</option>';
+                        select.appendChild(new Option('-- Please select a group --', ''));
                         data.groups.forEach(g => {
-                            select.innerHTML += `<option value="${g.id}">${g.title}</option>`;
+                            const opt = new Option(g.title, g.id);
+                            opt.dataset.forum = g.is_forum ? '1' : '0';
+                            select.appendChild(opt);
                         });
                     } else {
-                        select.innerHTML = '<option value="">No groups found</option>';
+                        select.appendChild(new Option('No groups found', ''));
                     }
                 });
         }
 
+        $('groupSelect').addEventListener('change', (e) => {
+            const chatId = e.target.value;
+            const container = $('topicContainer');
+            const topicSelect = $('topicSelect');
+
+            topicSelect.innerHTML = '';
+            topicSelect.appendChild(new Option('All Topics', ''));
+            container.classList.add('hidden');
+
+            if (!chatId) return;
+
+            fetch('/api/topics?chat_id=' + encodeURIComponent(chatId))
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.topics && data.topics.length > 0) {
+                        data.topics.forEach(t => topicSelect.appendChild(new Option(t.title, t.id)));
+                        container.classList.remove('hidden');
+                    }
+                })
+                .catch(() => container.classList.add('hidden'));
+        });
+
         function startDownload() {
-            const chatId = document.getElementById('groupSelect').value;
+            const chatId = $('groupSelect').value;
             if (!chatId) return alert('Please select a group first!');
+
+            const mediaTypes = Array.from(document.querySelectorAll('.media-type:checked')).map(cb => cb.value);
+            if (mediaTypes.length === 0) return alert('Please select at least one media type!');
+
+            const topicId = $('topicContainer').classList.contains('hidden') ? '' : $('topicSelect').value;
 
             fetch('/api/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId })
-            }).then(res => res.json()).then(data => {
-                if (!data.success) alert('Error: ' + data.error);
-            });
+                body: JSON.stringify({
+                    chat_id: chatId,
+                    topic_id: topicId || null,
+                    media_types: mediaTypes
+                })
+            })
+            .then(res => res.json())
+            .then(data => { if (!data.success) alert('Error: ' + data.error); });
         }
 
         function stopDownload() {
@@ -243,37 +437,30 @@
         }
 
         function startPolling() {
-            setInterval(() => {
+            if (statusTimer) return;
+            statusTimer = setInterval(() => {
                 fetch('/api/status')
                     .then(res => res.json())
                     .then(data => {
-                        document.getElementById('uptime').textContent = data.uptime;
-                        document.getElementById('statusText').textContent = data.status_text;
-                        document.getElementById('currentFile').textContent = data.current_file;
-                        document.getElementById('fileSize').textContent = data.file_size_mb;
-                        document.getElementById('downloadSpeed').textContent = data.download_speed_mbps;
-                        document.getElementById('totalFiles').textContent = data.total_files;
-                        document.getElementById('downloadCount').textContent = data.downloaded_count;
-                        
-                        // Current File Progress Update
-                        document.getElementById('fileProgressText').textContent = data.current_file_progress + '%';
-                        document.getElementById('fileProgressBar').style.width = data.current_file_progress + '%';
-                        
-                        // Overall Progress Update
-                        document.getElementById('progressText').textContent = data.overall_progress + '%';
-                        document.getElementById('progressBar').style.width = data.overall_progress + '%';
+                        $('uptime').textContent = data.uptime;
+                        $('statusText').textContent = data.status_text;
+                        $('currentFile').textContent = data.current_file;
+                        $('fileSize').textContent = data.file_size_mb;
+                        $('downloadSpeed').textContent = data.download_speed_mbps;
+                        $('totalFiles').textContent = data.total_files === null ? '-' : data.total_files;
+                        $('downloadCount').textContent = data.downloaded_count;
+                        $('skippedCount').textContent = data.skipped_count;
+                        $('failedCount').textContent = data.failed_count;
 
-                        const startBtn = document.getElementById('startBtn');
-                        const stopBtn = document.getElementById('stopBtn');
+                        $('fileProgressText').textContent = data.current_file_progress + '%';
+                        $('fileProgressBar').style.width = data.current_file_progress + '%';
+                        $('progressText').textContent = data.overall_progress + '%';
+                        $('progressBar').style.width = data.overall_progress + '%';
 
-                        if (data.is_downloading) {
-                            startBtn.style.display = 'none';
-                            stopBtn.style.display = 'inline-flex';
-                        } else {
-                            startBtn.style.display = 'inline-flex';
-                            stopBtn.style.display = 'none';
-                        }
-                    });
+                        $('startBtn').style.display = data.is_downloading ? 'none' : 'inline-flex';
+                        $('stopBtn').style.display = data.is_downloading ? 'inline-flex' : 'none';
+                    })
+                    .catch(() => { /* ignore transient errors */ });
             }, 1000);
         }
     </script>
