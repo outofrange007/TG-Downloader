@@ -18,7 +18,7 @@ import shutil
 
 import qrcode
 from flask import Flask, jsonify, render_template, request
-from telethon import types
+from telethon import types, utils
 from telethon.errors import (
     FloodWaitError,
     PasswordHashInvalidError,
@@ -28,6 +28,20 @@ from telethon.errors import (
 )
 from telethon.sync import TelegramClient
 from telethon.tl.functions.channels import GetForumTopicsRequest
+
+# Parallel downloads (desktop-app style) via FastTelethon. If the module is
+# missing or incompatible, downloads fall back to Telethon's single-connection
+# download_media so nothing breaks.
+try:
+    from FastTelethon import ParallelTransferrer
+    FAST_DOWNLOAD_AVAILABLE = True
+except Exception:
+    ParallelTransferrer = None
+    FAST_DOWNLOAD_AVAILABLE = False
+
+# Parallel downloads pay off only for larger files; below this size the extra
+# connection setup costs more time than it saves.
+PARALLEL_MIN_SIZE = 8 * 1024 * 1024
 
 
 class TelegramRipperWeb:
@@ -49,6 +63,28 @@ class TelegramRipperWeb:
 
         self.setup_directories()
         self.setup_logging()
+
+        # Parallel downloads via FastTelethon: several connections per file,
+        # like the desktop app. DL_CONNECTIONS controls the connection count;
+        # lower it (e.g. 4) if Telegram answers with flood waits.
+        try:
+            self.download_connections = max(
+                1, int(os.environ.get("DL_CONNECTIONS", "6"))
+            )
+        except ValueError:
+            self.download_connections = 6
+
+        if FAST_DOWNLOAD_AVAILABLE:
+            self.logger.info(
+                "FastTelethon loaded: parallel downloads enabled "
+                "(%d connections per file)", self.download_connections,
+            )
+        else:
+            self.download_connections = 1
+            self.logger.warning(
+                "FastTelethon not loaded: downloads use one connection. "
+                "Mount FastTelethon.py next to trweb.py to enable parallel downloads"
+            )
 
         self.load_config()
         self.download_history, self.legacy_history = self.load_history()
@@ -72,7 +108,7 @@ class TelegramRipperWeb:
                 name="archive-worker",
                 daemon=True,
             ).start()
-            
+
         self.app = Flask(__name__)
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -105,9 +141,9 @@ class TelegramRipperWeb:
 
         self.setup_web_routes()
 
-    # ------------------------------------------------------------------
+    # ----
     # Setup helpers
-    # ------------------------------------------------------------------
+    # ----
     def setup_directories(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.savepath.mkdir(parents=True, exist_ok=True)
@@ -142,9 +178,9 @@ class TelegramRipperWeb:
         self.logger.addHandler(console_handler)
         self.logger.addHandler(file_handler)
 
-    # ------------------------------------------------------------------
+    # ----
     # Configuration
-    # ------------------------------------------------------------------
+    # ----
     def load_config(self):
         if not self.config_file.exists():
             return
@@ -184,9 +220,9 @@ class TelegramRipperWeb:
             if temporary_file.exists():
                 temporary_file.unlink()
 
-    # ------------------------------------------------------------------
+    # ----
     # Download history
-    # ------------------------------------------------------------------
+    # ----
     def load_history(self):
         download_history = set()
         legacy_history = set()
@@ -202,7 +238,9 @@ class TelegramRipperWeb:
                         try:
                             entry = json.loads(line)
                         except json.JSONDecodeError:
-                            self.logger.warning("Invalid history entry in line %d", line_number)
+                            self.logger.warning(
+                                "Invalid history entry in line %d", line_number
+                            )
                             continue
 
                         identifier = entry.get("identifier")
@@ -212,7 +250,9 @@ class TelegramRipperWeb:
             except OSError as exc:
                 self.logger.error("Could not read history: %s", exc)
 
-            self.logger.info("Download history loaded: %d entries", len(download_history))
+            self.logger.info(
+                "Download history loaded: %d entries", len(download_history)
+            )
             return download_history, legacy_history
 
         legacy_file = self.data_dir / "download_history.log"
@@ -226,7 +266,9 @@ class TelegramRipperWeb:
                             if legacy_name:
                                 legacy_history.add(legacy_name)
 
-                self.logger.info("Legacy history loaded: %d entries", len(legacy_history))
+                self.logger.info(
+                    "Legacy history loaded: %d entries", len(legacy_history)
+                )
             except OSError as exc:
                 self.logger.error("Could not read legacy history: %s", exc)
 
@@ -258,9 +300,9 @@ class TelegramRipperWeb:
         except OSError as exc:
             self.logger.error("Could not write to download history: %s", exc)
 
-    # ------------------------------------------------------------------
+    # ----
     # File naming
-    # ------------------------------------------------------------------
+    # ----
     @staticmethod
     def sanitize_path_name(name):
         if not name:
@@ -299,9 +341,9 @@ class TelegramRipperWeb:
             return f"{timestamp}_{original_name}"
         return f"{timestamp}_media{extension}"
 
-    # ------------------------------------------------------------------
+    # ----
     # Media detection and counting
-    # ------------------------------------------------------------------
+    # ----
     @staticmethod
     def is_downloadable_media(message, allowed_types=None):
         """Return True if the message has downloadable media matching the filter."""
@@ -400,9 +442,9 @@ class TelegramRipperWeb:
         self.logger.info("Media pre-count finished: %d downloadable files", total)
         return total
 
-    # ------------------------------------------------------------------
+    # ----
     # Forum topics
-    # ------------------------------------------------------------------
+    # ----
     def get_topic_name(self, client, chat_id, topic_id, cache):
         if topic_id in cache:
             return cache[topic_id]
@@ -445,9 +487,9 @@ class TelegramRipperWeb:
         target_folder.mkdir(parents=True, exist_ok=True)
         return target_folder
 
-    # ------------------------------------------------------------------
+    # ----
     # Status helpers
-    # ------------------------------------------------------------------
+    # ----
     def set_status(self, **values):
         with self.lock:
             for key, value in values.items():
@@ -469,10 +511,10 @@ class TelegramRipperWeb:
             asyncio.get_event_loop()
         except RuntimeError:
             asyncio.set_event_loop(asyncio.new_event_loop())
-            
-    # ------------------------------------------------------------------
+
+    # ----
     # Background archiving (move finished downloads to slow storage)
-    # ------------------------------------------------------------------
+    # ----
     def _archive_worker(self):
         """Background thread that moves finished downloads to ARCHIVE_PATH."""
         while True:
@@ -524,10 +566,38 @@ class TelegramRipperWeb:
             if self.wait_or_stop(2.0):
                 return False
         return True
-        
-    # ------------------------------------------------------------------
+
+    # ----
+    # Parallel download (FastTelethon)
+    # ----
+    def _download_document_parallel(self, client, document, out_file, progress_callback):
+        """Download one document over several parallel connections."""
+        dc_id, location = utils.get_input_location(document)
+        written = 0
+
+        async def _run():
+            nonlocal written
+            downloader = ParallelTransferrer(client, dc_id)
+            try:
+                async for chunk in downloader.download(
+                    location,
+                    document.size,
+                    connection_count=self.download_connections,
+                ):
+                    out_file.write(chunk)
+                    written += len(chunk)
+                    if progress_callback:
+                        progress_callback(written, document.size)
+            finally:
+                if downloader.senders:
+                    await downloader._cleanup()
+
+        client.loop.run_until_complete(_run())
+        return str(out_file.name)
+
+    # ----
     # Download worker
-    # ------------------------------------------------------------------
+    # ----
     def run_download_task(self, chat_id, allowed_types=None, topic_id=None):
         self.ensure_event_loop()
         topic_cache = {}
@@ -572,10 +642,10 @@ class TelegramRipperWeb:
 
                     if not self.is_downloadable_media(message, allowed_types):
                         continue
-                    
+
                     if not self._wait_for_archive_backlog():
                         break
-                        
+
                     self.processed_counter += 1
                     identifier = self.make_history_identifier(chat_id, message.id)
                     filename = self.get_message_filename(message)
@@ -655,11 +725,44 @@ class TelegramRipperWeb:
                         self.set_status(**status_update)
 
                     try:
-                        download_result = client.download_media(
-                            message=message,
-                            file=str(temporary_path),
-                            progress_callback=progress_callback,
+                        document = getattr(message, "document", None)
+                        use_parallel = (
+                            document is not None
+                            and FAST_DOWNLOAD_AVAILABLE
+                            and document.size >= PARALLEL_MIN_SIZE
                         )
+
+                        if use_parallel:
+                            try:
+                                with open(temporary_path, "wb") as out_file:
+                                    download_result = self._download_document_parallel(
+                                        client,
+                                        document,
+                                        out_file,
+                                        progress_callback,
+                                    )
+                            except FloodWaitError:
+                                raise
+                            except Exception:
+                                self.logger.exception(
+                                    "Parallel download failed; "
+                                    "falling back to single connection"
+                                )
+                                try:
+                                    temporary_path.unlink()
+                                except OSError:
+                                    pass
+                                download_result = client.download_media(
+                                    message=message,
+                                    file=str(temporary_path),
+                                    progress_callback=progress_callback,
+                                )
+                        else:
+                            download_result = client.download_media(
+                                message=message,
+                                file=str(temporary_path),
+                                progress_callback=progress_callback,
+                            )
 
                         if self.stop_event.is_set():
                             if temporary_path.exists():
@@ -694,17 +797,20 @@ class TelegramRipperWeb:
                             filename,
                             average_speed,
                         )
-                        
+
                         if self.archive_dir:
                             try:
-                                rel_path = target_path.relative_to(self.data_dir)
+                                # rel_path is relative to the downloads folder itself,
+                                # so savepath / rel_path points at the real file
+                                # (fixes the old "downloads/downloads/..." bug).
+                                rel_path = target_path.relative_to(self.savepath)
                             except ValueError:
                                 rel_path = None
                             if rel_path is not None:
                                 with self.lock:
                                     self.archive_pending_bytes += target_path.stat().st_size
                                 self.archive_queue.put(rel_path)
-                        
+
                         self.set_status(
                             download_counter=self.download_counter,
                             current_file_progress=100.0,
@@ -766,9 +872,9 @@ class TelegramRipperWeb:
                 if not was_stopped and self.failed_counter == 0:
                     self.overall_progress = 100.0
 
-    # ------------------------------------------------------------------
+    # ----
     # QR login
-    # ------------------------------------------------------------------
+    # ----
     @staticmethod
     def generate_qr_base64(url):
         qr = qrcode.QRCode(
@@ -854,13 +960,14 @@ class TelegramRipperWeb:
                                 error="Incorrect 2FA password",
                             )
 
-                    if not logged_in:
-                        self.set_qr_state(
-                            status="expired",
-                            error="2FA password was not provided in time.",
-                        )
-                        return
-                    break
+                if not logged_in:
+                    self.set_qr_state(
+                        status="expired",
+                        error="2FA password was not provided in time.",
+                    )
+                    return
+
+                break
 
             if not logged_in:
                 self.set_qr_state(
@@ -875,7 +982,7 @@ class TelegramRipperWeb:
 
             self.set_qr_state(status="success", qr_image=None, error=None)
             self.logger.info("QR login successful")
-            
+
         except Exception as exc:
             self.logger.exception("Error during QR login worker")
             self.set_qr_state(status="error", error=str(exc))
@@ -884,9 +991,9 @@ class TelegramRipperWeb:
             if client is not None:
                 client.disconnect()
 
-    # ------------------------------------------------------------------
+    # ----
     # Web routes
-    # ------------------------------------------------------------------
+    # ----
     def setup_web_routes(self):
         @self.app.route("/")
         def index():
@@ -911,7 +1018,7 @@ class TelegramRipperWeb:
                 if client is not None:
                     client.disconnect()
 
-        # ----- QR login -----
+        # ---- QR login ----
         @self.app.route("/api/auth/qr/start", methods=["POST"])
         def auth_qr_start():
             data = request.get_json(silent=True) or {}
@@ -959,7 +1066,7 @@ class TelegramRipperWeb:
             self.qr_password_queue.put(password)
             return jsonify({"success": True})
 
-        # ----- Phone code login -----
+        # ---- Phone code login ----
         @self.app.route("/api/auth/send_code", methods=["POST"])
         def auth_send_code():
             self.ensure_event_loop()
@@ -1042,7 +1149,7 @@ class TelegramRipperWeb:
                 if client is not None:
                     client.disconnect()
 
-        # ----- Groups and topics -----
+        # ---- Groups and topics ----
         @self.app.route("/api/groups")
         def api_groups():
             self.ensure_event_loop()
@@ -1121,7 +1228,7 @@ class TelegramRipperWeb:
                 if client is not None:
                     client.disconnect()
 
-        # ----- Download control -----
+        # ---- Download control ----
         @self.app.route("/api/status")
         def api_status():
             with self.lock:
