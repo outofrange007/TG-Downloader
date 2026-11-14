@@ -1,384 +1,289 @@
 # Telegram Downloader
 
-A Flask-based web application that downloads media files from Telegram groups, supergroups, channels, and forum topics.
-
-The application uses the Telegram user API through Telethon. Downloaded media is stored in an automatically created folder structure based on the Telegram group and, where applicable, the forum topic.
+A Flask-based web application for downloading media from Telegram groups, supergroups, channels, and forum topics. It uses a Telegram user account through Telethon and stores downloads in a group- and topic-based folder structure.
 
 ## Features
 
-- Web dashboard for Telegram authentication and download control
-- Download media from Telegram groups, supergroups, and channels
-- Support for Telegram forum topics
-- Automatic folder structure based on group and topic names
-- Persistent Telethon user session
-- Persistent Telegram configuration
-- Duplicate protection using `chat_id:message_id` identifiers
-- Compatibility with the legacy `download_history.log`
-- Existing-file detection on disk
-- Unique filenames containing the timestamp and Telegram message ID
-- Temporary `.part` files during downloads
-- Atomic file replacement after successful downloads
-- Graceful download stopping
-- Protection against multiple simultaneous downloads
-- Live total-file count and overall progress
-- Live current-file progress and download speed
-- Downloaded, skipped, processed, and failed counters
+- Web dashboard for Telegram login and download control
+- Login with a phone number and Telegram code, or QR code
+- Optional Telegram 2FA password support
+- Downloads photos, videos, documents, audio, and other supported media
+- Supports Telegram forum topics
+- Parallel downloads for documents of at least 8 MiB using FastTelethon
+- Configurable number of parallel connections per file
+- Single-connection fallback if FastTelethon is unavailable or a parallel download fails
+- Persistent Telegram session and configuration
+- Download history to avoid downloading the same message twice
+- Compatibility with legacy `download_history.log` entries
+- Checks for files already present on disk
+- Unique filenames containing the Telegram message ID
+- Temporary `.part` files and atomic finalization
+- Download progress, current-file progress, and speed in the dashboard
+- Graceful stop requests
 - Telegram flood-wait handling
-- Rotating log files
-- Docker, Docker Compose, and Portainer support
+- Optional background archiving to a separate storage path
+- Rotating application logs
+- Docker Compose and Portainer deployment
 
 ## Requirements
 
-- Telegram `api_id` and `api_hash` from [my.telegram.org](https://my.telegram.org)
-- A Telegram user account
-- Access to the Telegram groups or channels that should be downloaded
+- A Telegram account with access to the groups or channels to download
+- Telegram API credentials (`api_id` and `api_hash`) from [my.telegram.org](https://my.telegram.org)
 - Docker and Docker Compose, or Portainer with Docker access
-- A persistent writable data directory
+- A persistent, writable data directory
 
-A bot token is not required. The application uses a Telegram user session through Telethon.
+A bot token is not required. The application uses a Telegram user session.
 
-## Telegram API Credentials
+## Telegram API credentials and login
 
-Create an application at [my.telegram.org](https://my.telegram.org). The following values are required:
+Create an application at [my.telegram.org](https://my.telegram.org) to obtain an API ID and API hash. Enter these in the web interface.
 
-- `api_id`
-- `api_hash`
-- Phone number of the Telegram account
+You can log in using either:
 
-The credentials can be entered through the web interface and are stored in `config.json`.
+- **Phone login:** enter the phone number, request a Telegram code, then enter the code and—if requested—the 2FA password.
+- **QR login:** enter the API ID and API hash, scan the displayed QR code in Telegram, and provide the 2FA password if requested.
 
-## Authentication
+The application stores its configuration and Telethon session under `DATA_PATH`. Keep this directory persistent so you normally do not need to log in again after a container restart.
 
-1. Open the web interface.
-2. Enter the Telegram API ID, API hash, and phone number.
-3. Request a login code.
-4. Enter the code received from Telegram.
-5. Enter the Telegram 2FA password if requested.
-6. Select a Telegram group or channel.
+## Docker Compose deployment
 
-The Telethon session is stored persistently so authentication does not normally need to be repeated after a container restart.
+Example Compose configuration:
 
-## Folder Structure
+```yaml
+services:
+  telegram-downloader:
+    image: ghcr.io/outofrange007/tg-downloader:latest
+    container_name: telegram_ripper
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - /opt/tg_ripper_data:/app/data
+      # Optional: separate destination for completed downloads
+      - /mnt/usb_share/telegram_ripper:/app/archive
+    environment:
+      - TZ=Europe/Berlin
+      - DATA_PATH=/app/data
+      - WEB_PORT=5000
+      # Optional: parallel connections per qualifying file
+      - DL_CONNECTIONS=6
+      # Optional: enables moving completed downloads to archive storage
+      - ARCHIVE_PATH=/app/archive
+      # Optional: maximum pending archive data in MiB; default is 8192
+      - ARCHIVE_MAX_PENDING_MB=8192
+```
 
-Downloaded files are stored below the configured data directory.
+Create the host directories before deployment, adjusting the paths to your setup:
 
-For a normal group or channel:
+```bash
+mkdir -p /opt/tg_ripper_data
+mkdir -p /mnt/usb_share/telegram_ripper
+```
 
-    data/
-    └── downloads/
-        └── Group Name/
-            ├── 2026-09-16_10-52-03_244_photo.jpg
-            ├── 2026-09-16_10-55-12_245_document.pdf
-            └── 2026-09-16_11-04-36_246_video.mp4
+Start or update the stack:
 
-For a Telegram forum with topics:
+```bash
+docker compose up -d
+```
 
-    data/
-    └── downloads/
-        └── Group Name/
-            ├── General/
-            │   └── 2026-09-16_10-52-03_244_photo.jpg
-            ├── Topic One/
-            │   └── 2026-09-16_10-55-12_245_document.pdf
-            └── Topic Two/
-                └── 2026-09-16_11-04-36_246_video.mp4
+Open the web interface at:
 
-Group names, topic names, and filenames are sanitized before they are used as filesystem paths.
+```text
+http://localhost:5000
+```
 
-## Filename Format
+View application logs:
 
-The current filename format is:
+```bash
+docker compose logs -f telegram-downloader
+```
 
-    YYYY-MM-DD_HH-MM-SS_MESSAGE_ID_ORIGINAL_FILENAME
+Stop the stack:
 
-Example:
+```bash
+docker compose down
+```
 
-    2026-09-16_10-52-03_244_photo.jpg
+The archive volume and its environment variables are optional. If `ARCHIVE_PATH` is unset or empty, files remain in the data directory.
 
-If Telegram does not provide an original filename, a fallback name is generated:
-
-    2026-09-16_10-52-03_244_media.jpg
-
-The Telegram message ID prevents overwrites caused by identical timestamps or original filenames.
-
-## Downloadable Media
-
-The application downloads Telegram messages that provide a real Telethon file object. This includes photos, videos, documents, music, voice messages, GIFs, archives, and other downloadable Telegram files.
-
-Messages without a real downloadable file are ignored. This prevents errors caused by webpage previews, link previews, polls, locations, and unavailable media references.
-
-## Duplicate Protection
-
-The application uses three protection levels:
-
-1. The current JSONL history file is checked using `chat_id:message_id`.
-2. The legacy `download_history.log` is checked for files from older versions.
-3. Existing target files on disk are checked before downloading.
-
-The current history is stored in:
-
-    data/download_history.jsonl
-
-Each successful or migrated entry contains the Telegram chat ID, message ID, filename, and timestamp.
-
-## Data Directory
-
-The application stores runtime data below `DATA_PATH`.
-
-| File or directory | Purpose |
-|---|---|
-| `config.json` | Telegram API configuration and authentication data |
-| `scraping_session.session` | Persistent Telethon user session |
-| `download_history.jsonl` | Current download history |
-| `download_history.log` | Legacy download history |
-| `downloads/` | Downloaded Telegram media |
-| `logs/` | Application log files |
-| `logs/telegram-downloader.log` | Main rotating log file |
-
-Example:
-
-    data/
-    ├── config.json
-    ├── scraping_session.session
-    ├── download_history.jsonl
-    ├── downloads/
-    └── logs/
-        └── telegram-downloader.log
-
-Do not commit credentials, session files, personal media, or logs to a public repository.
-
-## Environment Variables
+## Environment variables
 
 | Variable | Default | Description |
 |---|---:|---|
-| `DATA_PATH` | `./data` | Application data directory |
-| `WEB_PORT` | `5000` | Internal Flask web server port |
+| `DATA_PATH` | `./data` | Directory for configuration, session, download history, downloads, and logs |
+| `WEB_PORT` | `5000` | Web interface port inside the container |
+| `DL_CONNECTIONS` | `6` | Number of connections used by FastTelethon for qualifying parallel downloads; minimum is 1 |
+| `ARCHIVE_PATH` | unset | Optional destination for completed files; enables background archiving when set |
+| `ARCHIVE_MAX_PENDING_MB` | `8192` | Pending archive data threshold in MiB; downloading waits while the pending amount is at or above this limit |
 
-Recommended container values:
+### Parallel downloads
 
-    DATA_PATH=/app/data
-    WEB_PORT=5000
+FastTelethon is used for Telegram documents whose size is at least **8 MiB**. Smaller files and photos use Telethon's regular download method because parallel connection setup may not help for small files.
 
-## Docker Compose Deployment
+The `DL_CONNECTIONS` setting controls the number of connections per qualifying file. The default is `6`. If Telegram rate limits occur, reduce this value. If FastTelethon cannot be loaded or a parallel transfer fails, the application falls back to a single-connection download.
 
-The prebuilt image can be started with the following Compose configuration:
+`FastTelethon.py` is included in the repository root and is copied into the image by the Dockerfile.
 
-    version: "3.8"
+### Optional archive storage
 
-    services:
-      telegram-downloader:
-        image: ghcr.io/outofrange007/tg-downloader:latest
-        container_name: tg_downloader
-        restart: unless-stopped
-        ports:
-          - "5000:5000"
-        volumes:
-          - ./data:/app/data
-        environment:
-          - TZ=Europe/Berlin
-          - DATA_PATH=/app/data
-          - WEB_PORT=5000
+When `ARCHIVE_PATH` is set, completed files are queued for background archiving. The worker copies each file to the archive destination, finalizes the copy, and then removes the local source file. The archive path should be mounted to persistent storage and writable by the container.
 
-Start the application:
+`ARCHIVE_MAX_PENDING_MB` limits how much completed data may be waiting for archival. When the pending amount reaches the configured threshold, the download worker waits for the backlog to decrease before continuing.
 
-    docker compose up -d
+## Storage layout
 
-The web interface is available at:
+The application stores runtime data below `DATA_PATH`. Downloads are written under its `downloads/` directory.
 
-    http://localhost:5000
+Example:
 
-View the logs:
+```text
+/app/data/
+├── config.json
+├── scraping_session.session
+├── download_history.jsonl
+├── downloads/
+│   └── Group Name/
+│       └── Topic Name/
+└── logs/
+    └── telegram-ripper.log
+```
 
-    docker compose logs -f telegram-downloader
+For a group or channel without forum topics, files are stored directly in the group folder. For a forum, files are organized into topic folders.
 
-Stop the application:
+Names are sanitized before being used as filesystem paths. Download filenames include the message timestamp and Telegram message ID, followed by the original filename when available.
 
-    docker compose down
+Example:
 
-## Portainer and TrueNAS Deployment
+```text
+2026-11-14_16-26-29_205927_2020 - Fiona Apple - Fetch The Bolt Cutters.zip
+```
 
-Example Portainer Stack:
+If Telegram does not provide a filename, the application uses a generated name based on the message ID and media extension.
 
-    version: "3.8"
+## Download history and duplicate detection
 
-    services:
-      telegram-downloader:
-        image: ghcr.io/outofrange007/tg-downloader:latest
-        container_name: tg_downloader
-        restart: unless-stopped
-        ports:
-          - "5000:5000"
-        volumes:
-          - /opt/telegram_downloader/data:/app/data
-        environment:
-          - TZ=Europe/Berlin
-          - DATA_PATH=/app/data
-          - WEB_PORT=5000
+The current history is stored in:
 
-The host directory must be persistent and writable by the container. Create it before deployment if necessary:
+```text
+DATA_PATH/download_history.jsonl
+```
 
-    mkdir -p /opt/downloader/data
+Each successful or migrated entry records the message identifier, chat ID, message ID, filename, and timestamp. The application also checks the legacy `download_history.log` when the current JSONL history file does not exist, and checks the target folder for existing files.
 
-Do not delete `scraping_session.session` unless a new Telegram login is intended.
+Do not delete the persistent data directory if you want to retain the Telegram session and download history.
 
-If permissions prevent the container from writing to the directory, adjust ownership and permissions according to the user IDs used by the container.
+## Download behavior
+
+For each selected chat or forum topic, the application:
+
+1. Checks Telegram authorization.
+2. Counts media for the progress display.
+3. Iterates through messages and filters for downloadable media.
+4. Skips messages already recorded in history or already present on disk.
+5. Downloads new files to a temporary `.part` path.
+6. Moves a completed file to its final name.
+7. Records the message in the download history.
+8. Queues the file for archival if archive storage is enabled.
+
+The dashboard displays counts and progress for the current download. The Stop button requests a graceful stop; the worker stops processing additional messages after the current operation is handled where possible.
+
+## Logging
+
+Logs are written to:
+
+```text
+DATA_PATH/logs/telegram-ripper.log
+```
+
+The application also writes logs to the container console. The rotating log file has a maximum size of 5 MiB and keeps up to three backup files.
 
 ## Web API
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/` | GET | Web dashboard |
-| `/api/auth/status` | GET | Check Telegram authentication status |
-| `/api/auth/send_code` | POST | Save credentials and request a Telegram code |
+| `/api/auth/status` | GET | Check Telegram authorization status |
+| `/api/auth/send_code` | POST | Save phone-login credentials and request a Telegram code |
 | `/api/auth/verify` | POST | Verify the Telegram code and optional 2FA password |
-| `/api/groups` | GET | Load available Telegram groups and channels |
-| `/api/status` | GET | Return the current download status |
-| `/api/start` | POST | Start downloading from a selected chat |
-| `/api/stop` | POST | Request a graceful download stop |
+| `/api/auth/qr/start` | POST | Start QR login |
+| `/api/auth/qr/status` | GET | Check QR-login status |
+| `/api/auth/qr/2fa` | POST | Submit the 2FA password during QR login |
+| `/api/groups` | GET | List available groups and channels |
+| `/api/topics?chat_id=...` | GET | List forum topics for a chat |
+| `/api/status` | GET | Return current download status |
+| `/api/start` | POST | Start a download |
+| `/api/stop` | POST | Request a graceful stop |
 
-## Download Process
+## Local development
 
-The worker:
+The project requires Python 3.11 or a compatible Python version and the dependencies listed in `requirements.txt`.
 
-1. Connects to Telegram using the persistent session.
-2. Verifies the authentication state.
-3. Loads the selected chat.
-4. Counts media files using Telegram media filters without a second full chat scan.
-5. Iterates through the chat messages once for downloading.
-6. Ignores messages without a real downloadable file.
-7. Creates a unique sanitized filename.
-8. Determines the group and forum-topic destination folder.
-9. Checks history and existing files.
-10. Downloads new files to a `.part` file.
-11. Verifies the result returned by Telethon.
-12. Moves the completed file to its final path.
-13. Writes the message identifier to `download_history.jsonl`.
-14. Updates the dashboard counters and progress values.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Temporary Files and Stop Handling
+Set the relevant environment variables as needed:
 
-Files are first downloaded with a `.part` suffix:
+```bash
+export DATA_PATH=./data
+export WEB_PORT=5000
+export DL_CONNECTIONS=6
+```
 
-    2026-09-16_10-52-03_244_photo.jpg.part
+Run the application:
 
-After a successful download, the file is moved to its final name. Incomplete temporary files are removed where possible after a failed or interrupted operation.
+```bash
+python trweb.py
+```
 
-The Stop button sets a stop event. The worker finishes or interrupts the current operation where possible, removes incomplete temporary files, and stops processing additional messages.
+Then open:
 
-## Progress Display
-
-The dashboard can display:
-
-- Total number of files
-- Processed files
-- Downloaded files
-- Skipped files
-- Failed files
-- Overall progress
-- Current-file progress
-- Current filename
-- Current file size
-- Current download speed
-- Current status
-
-The speed is measured using Telethon's download progress callback and displayed in MB/s.
-
-## Telegram Flood-Wait Handling
-
-When Telegram requests a flood-wait, the application logs the required waiting period, shows the waiting status in the web interface, waits for the requested time, and continues unless a stop was requested.
-
-## Logging
-
-Logs are written to:
-
-    data/logs/telegram-downloader.log
-
-The log uses rotating logging with a maximum size of 5 MB and up to three backup files.
-
-## Technology Stack
-
-- Python
-- Flask
-- Telethon
-- `cryptg`
-- Docker
-- Docker Compose
-- Portainer
-- Telegram MTProto API
-
-## Python Dependencies
-
-The dependencies are defined in `requirements.txt`:
-
-    Flask==3.0.0
-    Telethon==1.33.1
-    cryptg==0.4.0
-
-Install them manually with:
-
-    pip install -r requirements.txt
-
-## Local Development
-
-Create a virtual environment:
-
-    python3 -m venv .venv
-
-Activate it on Linux:
-
-    source .venv/bin/activate
-
-Install the dependencies:
-
-    pip install -r requirements.txt
-
-Set the environment variables:
-
-    export DATA_PATH=./data
-    export WEB_PORT=5000
-
-Start the application:
-
-    python trweb.py
-
-Open the web interface at:
-
-    http://localhost:5000
+```text
+http://localhost:5000
+```
 
 ## Security
 
-- Use the web interface only in a trusted local network unless authentication and HTTPS are added.
-- Never commit Telegram API credentials.
+- Use the web interface only on a trusted network unless you protect remote access with suitable authentication and HTTPS.
 - Treat `scraping_session.session` like a password.
-- Do not share `config.json` or session files.
-- Protect the persistent data directory.
-- Review host filesystem permissions.
-- Use a reverse proxy with authentication for remote access.
+- Do not publish or share `config.json`, session files, or downloaded media.
+- Do not commit credentials, session files, logs, or personal downloads to a public repository.
+- Ensure the host data and archive directories are persistent and writable by the container.
 
 ## Troubleshooting
 
-### Authentication status returns an error
+### Telegram login is requested again
 
-Check the API ID, API hash, phone number, outbound container connectivity, data-directory permissions, and persistence of the session file.
+Check that the data directory is mounted at the expected `DATA_PATH`, that `scraping_session.session` is present and writable, and that the container was not recreated with an empty data directory.
 
-### Telegram groups are not displayed
+### Groups or channels are missing
 
-Confirm that the account is authenticated, the session file exists, the account has access to the groups, and the application log contains no authentication errors.
+Confirm that the account is authorized and has access to the chats. Check the container logs for authentication or connection errors.
 
 ### Files are skipped
 
-A file may be skipped because its `chat_id:message_id` already exists in `download_history.jsonl`, a matching legacy entry exists, the file already exists on disk, or the message has no real downloadable file.
+A message may be skipped because its identifier is already in `download_history.jsonl`, a legacy history entry matches, the target file already exists, or the message does not contain downloadable media.
 
-### A file fails without an output file
+### Parallel downloads are not enabled
 
-Telegram may return no file for webpage previews, link previews, unavailable media, or unsupported media references. These messages are skipped where the application can identify them before downloading.
+Check the startup logs for:
 
-### Authentication is requested again
+```text
+FastTelethon loaded: parallel downloads enabled
+```
 
-Check that the data volume is mounted correctly, `scraping_session.session` is writable, the container uses the expected `/app/data` path, and the container was not recreated with an empty data directory.
+If FastTelethon cannot be imported, the application logs a warning and uses single-connection downloads. Confirm that `FastTelethon.py` is included in the image and that the running container uses the updated image.
+
+### Archiving fails
+
+Confirm that `ARCHIVE_PATH` points to the mounted archive directory and that the container can write to it. Check the logs for the specific file and filesystem error. If archival is disabled, leave `ARCHIVE_PATH` unset or empty.
+
+### Telegram rate limits occur
+
+Reduce `DL_CONNECTIONS` and redeploy the container. The application handles Telegram flood-wait responses by waiting for the requested period unless a stop is requested.
 
 ## License
 
-This project is licensed under the MIT License.
-
-See the [LICENSE](LICENSE) file for the complete license text.
+This project is licensed under the MIT License. See the `LICENSE` file for the complete license text.
