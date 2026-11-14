@@ -14,6 +14,7 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import shutil
 
 import qrcode
 from flask import Flask, jsonify, render_template, request
@@ -52,6 +53,26 @@ class TelegramRipperWeb:
         self.load_config()
         self.download_history, self.legacy_history = self.load_history()
 
+        # Optional long-term storage: finished downloads are moved here in
+        # the background (empty = disabled). Example: ARCHIVE_PATH=/app/archive
+        archive_path = str(os.environ.get("ARCHIVE_PATH", "") or "").strip()
+        self.archive_dir = Path(archive_path) if archive_path else None
+        try:
+            self.archive_max_pending_bytes = int(
+                os.environ.get("ARCHIVE_MAX_PENDING_MB", "8192")
+            ) * 1024 * 1024
+        except ValueError:
+            self.archive_max_pending_bytes = 8 * 1024 * 1024 * 1024
+        self.archive_queue = queue.Queue()
+        self.archive_pending_bytes = 0
+        if self.archive_dir:
+            self.logger.info("Archive storage enabled: %s", self.archive_dir)
+            threading.Thread(
+                target=self._archive_worker,
+                name="archive-worker",
+                daemon=True,
+            ).start()
+            
         self.app = Flask(__name__)
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -448,7 +469,62 @@ class TelegramRipperWeb:
             asyncio.get_event_loop()
         except RuntimeError:
             asyncio.set_event_loop(asyncio.new_event_loop())
+            
+    # ------------------------------------------------------------------
+    # Background archiving (move finished downloads to slow storage)
+    # ------------------------------------------------------------------
+    def _archive_worker(self):
+        """Background thread that moves finished downloads to ARCHIVE_PATH."""
+        while True:
+            rel_path = self.archive_queue.get()
+            if rel_path is None:
+                break
+            source = self.savepath / rel_path
+            try:
+                size = source.stat().st_size
+            except OSError:
+                size = 0
+            try:
+                self._move_to_archive(rel_path)
+            except Exception:
+                self.logger.exception(
+                    "Archiving failed, file stays local: %s", rel_path
+                )
+            finally:
+                with self.lock:
+                    self.archive_pending_bytes -= size
+                self.archive_queue.task_done()
 
+    def _move_to_archive(self, rel_path):
+        """Copy to the archive filesystem, finalize atomically, delete source."""
+        source = self.savepath / rel_path
+        destination = self.archive_dir / rel_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp_destination = Path(str(destination) + ".part")
+        shutil.copyfile(source, temp_destination)
+        os.replace(temp_destination, destination)
+        source.unlink()
+        self.logger.info("Archived to long-term storage: %s", rel_path)
+
+    def _wait_for_archive_backlog(self):
+        """Waits while too many finished files are still pending archiving.
+
+        Prevents the fast local disk from filling up when the archive
+        storage is much slower than the download itself.
+        Returns False if a stop was requested while waiting.
+        """
+        while self.archive_dir:
+            with self.lock:
+                pending = self.archive_pending_bytes
+            if pending < self.archive_max_pending_bytes:
+                return True
+            self.set_status(
+                current_status="Waiting: moving finished files to archive..."
+            )
+            if self.wait_or_stop(2.0):
+                return False
+        return True
+        
     # ------------------------------------------------------------------
     # Download worker
     # ------------------------------------------------------------------
@@ -496,7 +572,10 @@ class TelegramRipperWeb:
 
                     if not self.is_downloadable_media(message, allowed_types):
                         continue
-
+                    
+                    if not self._wait_for_archive_backlog():
+                        break
+                        
                     self.processed_counter += 1
                     identifier = self.make_history_identifier(chat_id, message.id)
                     filename = self.get_message_filename(message)
@@ -615,7 +694,17 @@ class TelegramRipperWeb:
                             filename,
                             average_speed,
                         )
-
+                        
+                        if self.archive_dir:
+                            try:
+                                rel_path = target_path.relative_to(self.data_dir)
+                            except ValueError:
+                                rel_path = None
+                            if rel_path is not None:
+                                with self.lock:
+                                    self.archive_pending_bytes += target_path.stat().st_size
+                                self.archive_queue.put(rel_path)
+                        
                         self.set_status(
                             download_counter=self.download_counter,
                             current_file_progress=100.0,
