@@ -20,6 +20,7 @@ import qrcode
 from flask import Flask, jsonify, render_template, request
 from telethon import types, utils
 from telethon.errors import (
+    FileReferenceExpiredError,
     FloodWaitError,
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
@@ -595,6 +596,60 @@ class TelegramRipperWeb:
         client.loop.run_until_complete(_run())
         return str(out_file.name)
 
+    def _download_message_once(self, client, message, temporary_path, progress_callback):
+        """One download attempt: parallel for large documents, otherwise single connection."""
+        document = getattr(message, "document", None)
+        use_parallel = (
+            document is not None
+            and FAST_DOWNLOAD_AVAILABLE
+            and document.size >= PARALLEL_MIN_SIZE
+        )
+
+        if use_parallel:
+            try:
+                with open(temporary_path, "wb") as out_file:
+                    return self._download_document_parallel(
+                        client, document, out_file, progress_callback
+                    )
+            except (FloodWaitError, FileReferenceExpiredError):
+                raise  # handled by the caller (wait / refetch), no pointless fallback
+            except Exception:
+                self.logger.exception(
+                    "Parallel download failed; falling back to single connection"
+                )
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
+
+        return client.download_media(
+            message=message,
+            file=str(temporary_path),
+            progress_callback=progress_callback,
+        )
+
+    def _download_message(self, client, chat_id, message, temporary_path, progress_callback):
+        """Download; on an expired file reference reload the message once and retry."""
+        try:
+            return self._download_message_once(
+                client, message, temporary_path, progress_callback
+            )
+        except FileReferenceExpiredError:
+            self.logger.info(
+                "File reference expired for message %s - reloading message and retrying",
+                message.id,
+            )
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+            fresh = client.get_messages(chat_id, ids=message.id)
+            if not fresh or not getattr(fresh, "media", None):
+                raise
+            return self._download_message_once(
+                client, fresh, temporary_path, progress_callback
+            )
+
     # ----
     # Download worker
     # ----
@@ -725,44 +780,13 @@ class TelegramRipperWeb:
                         self.set_status(**status_update)
 
                     try:
-                        document = getattr(message, "document", None)
-                        use_parallel = (
-                            document is not None
-                            and FAST_DOWNLOAD_AVAILABLE
-                            and document.size >= PARALLEL_MIN_SIZE
+                        download_result = self._download_message(
+                            client,
+                            chat_id,
+                            message,
+                            temporary_path,
+                            progress_callback,
                         )
-
-                        if use_parallel:
-                            try:
-                                with open(temporary_path, "wb") as out_file:
-                                    download_result = self._download_document_parallel(
-                                        client,
-                                        document,
-                                        out_file,
-                                        progress_callback,
-                                    )
-                            except FloodWaitError:
-                                raise
-                            except Exception:
-                                self.logger.exception(
-                                    "Parallel download failed; "
-                                    "falling back to single connection"
-                                )
-                                try:
-                                    temporary_path.unlink()
-                                except OSError:
-                                    pass
-                                download_result = client.download_media(
-                                    message=message,
-                                    file=str(temporary_path),
-                                    progress_callback=progress_callback,
-                                )
-                        else:
-                            download_result = client.download_media(
-                                message=message,
-                                file=str(temporary_path),
-                                progress_callback=progress_callback,
-                            )
 
                         if self.stop_event.is_set():
                             if temporary_path.exists():
