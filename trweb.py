@@ -597,23 +597,107 @@ class TelegramRipperWeb:
         client.loop.run_until_complete(_run())
         return str(out_file.name)
 
+    # Request sizes tried (in order) when resuming a document on one connection.
+    RESUME_REQUEST_SIZES = (512 * 1024, 128 * 1024, 32 * 1024, 4 * 1024)
+
+    def _resume_document(self, client, message, document, temporary_path, progress_callback):
+        """Continue a document download from the bytes already in the .part file.
+
+        Uses a single connection (Telethon iter_download). If Telegram rejects a
+        request with LOCATION_INVALID, the same offset is retried with smaller
+        request sizes before giving up. Data already on disk is never discarded.
+        """
+        total = document.size
+        try:
+            have = temporary_path.stat().st_size
+        except OSError:
+            have = 0
+        if have > total:
+            have = 0  # foreign/corrupt leftover, start over
+        last_exc = None
+
+        for request_size in self.RESUME_REQUEST_SIZES:
+            have -= have % request_size  # offsets must be aligned to the request size
+            if have >= total:
+                break
+            self.logger.info(
+                "Resuming message %s at %s of %s bytes (request size %s KB, single connection)",
+                message.id, have, total, request_size // 1024,
+            )
+            remaining_chunks = (total - have + request_size - 1) // request_size
+
+            async def _run(out_file):
+                nonlocal have
+                async for chunk in client.iter_download(
+                    document,
+                    offset=have,
+                    request_size=request_size,
+                    limit=remaining_chunks,
+                    file_size=total,
+                ):
+                    if self.stop_event.is_set():
+                        return
+                    out_file.write(chunk)
+                    have += len(chunk)
+                    if progress_callback:
+                        progress_callback(have, total)
+
+            try:
+                mode = "r+b" if temporary_path.exists() else "wb"
+                with open(temporary_path, mode) as out_file:
+                    out_file.seek(have)
+                    out_file.truncate()
+                    client.loop.run_until_complete(_run(out_file))
+            except LocationInvalidError as exc:
+                last_exc = exc
+                self.logger.warning(
+                    "LocationInvalidError for message %s at offset %s of %s bytes"
+                    " (%s bytes missing, request size %s KB)",
+                    message.id, have, total, total - have, request_size // 1024,
+                )
+                continue
+
+            if self.stop_event.is_set():
+                return str(temporary_path)
+            if have >= total:
+                return str(temporary_path)
+            self.logger.warning(
+                "Telegram ended the stream for message %s early: %s of %s bytes",
+                message.id, have, total,
+            )
+            break
+
+        if have >= total:
+            return str(temporary_path)
+        if last_exc is not None:
+            raise last_exc
+        raise LocationInvalidError(request=None)
+
     def _download_message_once(self, client, message, temporary_path, progress_callback,
                                allow_parallel=True):
-        """One download attempt: parallel for large documents, otherwise single connection.
+        """One download attempt.
 
-        If the parallel path fails (including LOCATION_INVALID, which some files
-        trigger only on the FastTelethon path), fall back to Telethon's own
-        single-connection download_media.
+        Large documents: parallel (FastTelethon) first; on failure the bytes
+        already written are kept and the rest is fetched on a single connection.
+        Everything else: Telethon download_media.
         """
         document = getattr(message, "document", None)
-        use_parallel = (
-            allow_parallel
-            and document is not None
-            and FAST_DOWNLOAD_AVAILABLE
-            and document.size >= PARALLEL_MIN_SIZE
-        )
+        if document is None or document.size < PARALLEL_MIN_SIZE:
+            return client.download_media(
+                message=message,
+                file=str(temporary_path),
+                progress_callback=progress_callback,
+            )
 
-        if use_parallel:
+        try:
+            existing = temporary_path.stat().st_size
+        except OSError:
+            existing = 0
+        if 0 < existing < document.size:
+            # Partial data from an earlier attempt/run: only fetch the rest.
+            allow_parallel = False
+
+        if allow_parallel and FAST_DOWNLOAD_AVAILABLE:
             try:
                 with open(temporary_path, "wb") as out_file:
                     return self._download_document_parallel(
@@ -625,35 +709,23 @@ class TelegramRipperWeb:
                 try:
                     written = temporary_path.stat().st_size
                 except OSError:
-                    written = -1
-                if isinstance(exc, LocationInvalidError):
-                    self.logger.warning(
-                        "Parallel download: LocationInvalidError for message %s after %s of %s bytes"
-                        " (dc=%s); falling back to single connection",
-                        message.id, written, document.size, getattr(document, "dc_id", "?"),
-                    )
-                else:
-                    self.logger.exception(
-                        "Parallel download failed for message %s after %s of %s bytes;"
-                        " falling back to single connection",
-                        message.id, written, document.size,
-                    )
-                try:
-                    temporary_path.unlink()
-                except OSError:
-                    pass
+                    written = 0
+                log = self.logger.warning if isinstance(exc, LocationInvalidError) else self.logger.error
+                log(
+                    "Parallel download failed for message %s (%s) after %s of %s bytes (dc=%s);"
+                    " resuming on a single connection",
+                    message.id, type(exc).__name__, written, document.size,
+                    getattr(document, "dc_id", "?"),
+                )
 
-        return client.download_media(
-            message=message,
-            file=str(temporary_path),
-            progress_callback=progress_callback,
-        )
+        return self._resume_document(client, message, document, temporary_path, progress_callback)
 
     def _download_message(self, client, chat_id, message, temporary_path, progress_callback):
-        """Download; on a stale/invalid file location reload the message once and retry.
+        """Download; on a stale/invalid file location reload the message once and resume.
 
         Telegram answers with FILE_REFERENCE_EXPIRED or LOCATION_INVALID when the
-        file reference cached in the message object is no longer accepted.
+        file reference cached in the message object is no longer accepted. The
+        partial .part file is kept so the retry only fetches the missing bytes.
         """
         try:
             return self._download_message_once(
@@ -665,15 +737,17 @@ class TelegramRipperWeb:
                 type(exc).__name__,
                 message.id,
             )
-            try:
-                temporary_path.unlink()
-            except OSError:
-                pass
             fresh = client.get_messages(chat_id, ids=message.id)
             if not fresh or not getattr(fresh, "media", None):
                 raise
-            # The single-connection path already failed once (or parallel was not
-            # used), so retry with a fresh reference on a single connection only.
+            fresh_doc = getattr(fresh, "document", None)
+            old_doc = getattr(message, "document", None)
+            if fresh_doc is None or old_doc is None or fresh_doc.id != old_doc.id:
+                # Different (or no) document: partial data is not reusable
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
             return self._download_message_once(
                 client, fresh, temporary_path, progress_callback, allow_parallel=False
             )
@@ -900,11 +974,8 @@ class TelegramRipperWeb:
                             failed_counter=self.failed_counter,
                             current_status=f"File not downloadable: {filename}; continuing",
                         )
-                        if temporary_path.exists():
-                            try:
-                                temporary_path.unlink()
-                            except OSError:
-                                pass
+                        # Keep the partial .part file: the next run resumes from it
+                        # instead of downloading the whole file again.
 
                     except Exception:
                         self.failed_counter += 1
