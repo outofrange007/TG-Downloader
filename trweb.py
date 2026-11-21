@@ -22,6 +22,7 @@ from telethon import types, utils
 from telethon.errors import (
     FileReferenceExpiredError,
     FloodWaitError,
+    LocationInvalidError,
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
@@ -611,7 +612,7 @@ class TelegramRipperWeb:
                     return self._download_document_parallel(
                         client, document, out_file, progress_callback
                     )
-            except (FloodWaitError, FileReferenceExpiredError):
+            except (FloodWaitError, FileReferenceExpiredError, LocationInvalidError):
                 raise  # handled by the caller (wait / refetch), no pointless fallback
             except Exception:
                 self.logger.exception(
@@ -629,14 +630,19 @@ class TelegramRipperWeb:
         )
 
     def _download_message(self, client, chat_id, message, temporary_path, progress_callback):
-        """Download; on an expired file reference reload the message once and retry."""
+        """Download; on a stale/invalid file location reload the message once and retry.
+
+        Telegram answers with FILE_REFERENCE_EXPIRED or LOCATION_INVALID when the
+        file reference cached in the message object is no longer accepted.
+        """
         try:
             return self._download_message_once(
                 client, message, temporary_path, progress_callback
             )
-        except FileReferenceExpiredError:
+        except (FileReferenceExpiredError, LocationInvalidError) as exc:
             self.logger.info(
-                "File reference expired for message %s - reloading message and retrying",
+                "%s for message %s - reloading message and retrying",
+                type(exc).__name__,
                 message.id,
             )
             try:
@@ -855,6 +861,28 @@ class TelegramRipperWeb:
                                 pass
                         if self.wait_or_stop(wait_seconds):
                             break
+
+                    except (FileReferenceExpiredError, LocationInvalidError) as exc:
+                        # Still failing after a fresh reload: the file is not
+                        # downloadable on Telegram's side. Log one line instead of a
+                        # traceback; not added to history, so a later run retries it.
+                        self.failed_counter += 1
+                        self.logger.warning(
+                            "File not downloadable (%s) | chat=%s | message=%s | file=%s",
+                            type(exc).__name__,
+                            chat_id,
+                            message.id,
+                            filename,
+                        )
+                        self.set_status(
+                            failed_counter=self.failed_counter,
+                            current_status=f"File not downloadable: {filename}; continuing",
+                        )
+                        if temporary_path.exists():
+                            try:
+                                temporary_path.unlink()
+                            except OSError:
+                                pass
 
                     except Exception:
                         self.failed_counter += 1
