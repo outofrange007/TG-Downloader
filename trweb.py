@@ -597,11 +597,18 @@ class TelegramRipperWeb:
         client.loop.run_until_complete(_run())
         return str(out_file.name)
 
-    def _download_message_once(self, client, message, temporary_path, progress_callback):
-        """One download attempt: parallel for large documents, otherwise single connection."""
+    def _download_message_once(self, client, message, temporary_path, progress_callback,
+                               allow_parallel=True):
+        """One download attempt: parallel for large documents, otherwise single connection.
+
+        If the parallel path fails (including LOCATION_INVALID, which some files
+        trigger only on the FastTelethon path), fall back to Telethon's own
+        single-connection download_media.
+        """
         document = getattr(message, "document", None)
         use_parallel = (
-            document is not None
+            allow_parallel
+            and document is not None
             and FAST_DOWNLOAD_AVAILABLE
             and document.size >= PARALLEL_MIN_SIZE
         )
@@ -612,12 +619,25 @@ class TelegramRipperWeb:
                     return self._download_document_parallel(
                         client, document, out_file, progress_callback
                     )
-            except (FloodWaitError, FileReferenceExpiredError, LocationInvalidError):
-                raise  # handled by the caller (wait / refetch), no pointless fallback
-            except Exception:
-                self.logger.exception(
-                    "Parallel download failed; falling back to single connection"
-                )
+            except (FloodWaitError, FileReferenceExpiredError):
+                raise  # handled by the caller (wait / refetch)
+            except Exception as exc:
+                try:
+                    written = temporary_path.stat().st_size
+                except OSError:
+                    written = -1
+                if isinstance(exc, LocationInvalidError):
+                    self.logger.warning(
+                        "Parallel download: LocationInvalidError for message %s after %s of %s bytes"
+                        " (dc=%s); falling back to single connection",
+                        message.id, written, document.size, getattr(document, "dc_id", "?"),
+                    )
+                else:
+                    self.logger.exception(
+                        "Parallel download failed for message %s after %s of %s bytes;"
+                        " falling back to single connection",
+                        message.id, written, document.size,
+                    )
                 try:
                     temporary_path.unlink()
                 except OSError:
@@ -652,8 +672,10 @@ class TelegramRipperWeb:
             fresh = client.get_messages(chat_id, ids=message.id)
             if not fresh or not getattr(fresh, "media", None):
                 raise
+            # The single-connection path already failed once (or parallel was not
+            # used), so retry with a fresh reference on a single connection only.
             return self._download_message_once(
-                client, fresh, temporary_path, progress_callback
+                client, fresh, temporary_path, progress_callback, allow_parallel=False
             )
 
     # ----
