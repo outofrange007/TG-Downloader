@@ -767,7 +767,13 @@ class TelegramRipperWeb:
                 overall_progress=0.0,
             )
 
-            client = TelegramClient(self.session_name, self.api_id, self.api_hash)
+            client = TelegramClient(
+                self.session_name,
+                self.api_id,
+                self.api_hash,
+                raise_last_call_error=True,
+                base_logger=self.logger,
+            )
             with client:
                 if not client.is_user_authorized():
                     self.set_status(current_status="Telegram session is not authorized")
